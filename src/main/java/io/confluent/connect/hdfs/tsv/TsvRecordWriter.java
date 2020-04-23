@@ -31,6 +31,7 @@ import org.apache.kafka.connect.sink.SinkRecord;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import com.fasterxml.jackson.core.JsonPointer;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
@@ -94,7 +95,8 @@ public class TsvRecordWriter implements RecordWriterProvider<HdfsSinkConnectorCo
                                 } else if (RECORD_OFFSET_FIELD.equalsIgnoreCase(fieldName)) {
                                     return String.valueOf(record.kafkaOffset());
                                 }
-                                JsonNode fieldValue = jsonNode.get(fieldName);
+                                String jsonPointer = JsonPointer.SEPARATOR + fieldName.replace('.', JsonPointer.SEPARATOR);
+                                JsonNode fieldValue = jsonNode.at(jsonPointer);
                                 return fieldValue == null ? "" : fieldValue.asText("");
                             })
                             .collect(joining(TAB_DELIMITER));
