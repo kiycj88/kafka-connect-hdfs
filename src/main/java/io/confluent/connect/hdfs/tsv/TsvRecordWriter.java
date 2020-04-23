@@ -15,17 +15,23 @@
 
 package io.confluent.connect.hdfs.tsv;
 
+import static java.util.stream.Collectors.joining;
+import static java.util.stream.Collectors.toList;
+
+import java.io.BufferedWriter;
 import java.io.IOException;
 import java.io.OutputStream;
-import java.nio.charset.StandardCharsets;
+import java.io.OutputStreamWriter;
+import java.nio.charset.Charset;
+import java.util.Arrays;
+import java.util.List;
 
 import org.apache.kafka.connect.errors.ConnectException;
-import org.apache.kafka.connect.json.JsonConverter;
 import org.apache.kafka.connect.sink.SinkRecord;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import com.fasterxml.jackson.core.JsonGenerator;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import io.confluent.connect.hdfs.HdfsSinkConnectorConfig;
@@ -36,13 +42,14 @@ import io.confluent.connect.storage.format.RecordWriterProvider;
 public class TsvRecordWriter implements RecordWriterProvider<HdfsSinkConnectorConfig> {
     private static final Logger log = LoggerFactory.getLogger(TsvRecordWriter.class);
     private static final String EXTENSION = ".tsv";
-    public static final String TSV_FIELDS = "tsv.fields";
-    public static final String TSV_FIELDS_DEFAULT = "";
-    private static final String LINE_SEPARATOR = System.lineSeparator();
-    private static final byte[] LINE_SEPARATOR_BYTES = LINE_SEPARATOR.getBytes(StandardCharsets.UTF_8);
+    public static final String TSV_SCHEMA = "tsvSchema";
+    private static final int WRITER_BUFFER_SIZE = 128 * 1024;
+    private static final String TAB_DELIMITER = "\t";
+
+    public static final String RECORD_PARTITION_FIELD = "record.partition";
+    public static final String RECORD_OFFSET_FIELD = "record.offset";
     private final HdfsStorage storage;
     private final ObjectMapper mapper;
-    private final JsonConverter converter;
 
     /**
      * 
@@ -53,7 +60,6 @@ public class TsvRecordWriter implements RecordWriterProvider<HdfsSinkConnectorCo
     TsvRecordWriter(HdfsStorage storage) {
         this.storage = storage;
         this.mapper = new ObjectMapper();
-        this.converter = new JsonConverter();
     }
 
     @Override
@@ -63,40 +69,54 @@ public class TsvRecordWriter implements RecordWriterProvider<HdfsSinkConnectorCo
 
     @Override
     public RecordWriter getRecordWriter(final HdfsSinkConnectorConfig conf, final String filename) {
-        String tsvFields = (String) conf.get(TSV_FIELDS);
+        return new RecordWriter() {
+            final OutputStream out = storage.create(filename, true);
+            final OutputStreamWriter streamWriter = new OutputStreamWriter(out, Charset.defaultCharset());
+            final BufferedWriter writer = new BufferedWriter(streamWriter, WRITER_BUFFER_SIZE);
 
-        try {
-            return new RecordWriter() {
-                final OutputStream out = storage.create(filename, true);
-                final JsonGenerator writer = mapper.getFactory()
-                        .createGenerator(out)
-                        .setRootValueSeparator(null);
-
-                @Override
-                public void write(SinkRecord record) {
-                    log.trace("Sink record: {}", record.toString());
-                    try {
-                        writer.writeObject(record.value());
-                        writer.writeRaw(LINE_SEPARATOR);
-                    } catch (IOException e) {
-                        throw new ConnectException(e);
+            @Override
+            public void write(SinkRecord record) {
+                log.trace("Sink record: {}", record.toString());
+                try {
+                    Object value = record.value();
+                    JsonNode jsonNode = mapper.valueToTree(value);
+                    List<String> tsvFields = Arrays.stream(jsonNode.get(TSV_SCHEMA).asText().split(","))
+                            .map(tsvField -> tsvField.trim())
+                            .collect(toList());
+                    if (tsvFields.isEmpty()) {
+                        throw new ConnectException("'tsvSchema' is mandatory for TsvFormat");
                     }
-                }
 
-                @Override
-                public void commit() {}
-
-                @Override
-                public void close() {
-                    try {
-                        writer.close();
-                    } catch (IOException e) {
-                        throw new ConnectException(e);
-                    }
+                    String tsvValue = tsvFields.stream()
+                            .map(fieldName -> {
+                                if (RECORD_PARTITION_FIELD.equalsIgnoreCase(fieldName)) {
+                                    return String.valueOf(record.kafkaPartition());
+                                } else if (RECORD_OFFSET_FIELD.equalsIgnoreCase(fieldName)) {
+                                    return String.valueOf(record.kafkaOffset());
+                                }
+                                JsonNode fieldValue = jsonNode.get(fieldName);
+                                return fieldValue == null ? "" : fieldValue.asText("");
+                            })
+                            .collect(joining(TAB_DELIMITER));
+                    writer.write(tsvValue);
+                    writer.newLine();
+                } catch (IOException e) {
+                    throw new ConnectException(e);
                 }
-            };
-        } catch (IOException e) {
-            throw new ConnectException(e);
-        }
+            }
+
+            @Override
+            public void commit() {}
+
+            @Override
+            public void close() {
+                try {
+                    writer.close();
+                } catch (IOException e) {
+                    throw new ConnectException(e);
+                }
+            }
+        };
     }
+
 }
