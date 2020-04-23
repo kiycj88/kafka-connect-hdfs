@@ -17,15 +17,22 @@ package io.confluent.connect.hdfs.tsv;
 
 import static java.util.stream.Collectors.joining;
 import static java.util.stream.Collectors.toList;
+import static java.util.stream.Collectors.toSet;
 
 import java.io.BufferedWriter;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.io.OutputStreamWriter;
 import java.nio.charset.Charset;
+import java.time.Instant;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
+import java.util.Set;
 
+import org.apache.commons.lang.StringUtils;
 import org.apache.kafka.connect.errors.ConnectException;
 import org.apache.kafka.connect.sink.SinkRecord;
 import org.slf4j.Logger;
@@ -44,8 +51,11 @@ public class TsvRecordWriter implements RecordWriterProvider<HdfsSinkConnectorCo
     private static final Logger log = LoggerFactory.getLogger(TsvRecordWriter.class);
     private static final String EXTENSION = ".tsv";
     public static final String TSV_SCHEMA = "tsvSchema";
+    public static final String TIME_STAMP_FIELDS = "timeStampFields";
     private static final int WRITER_BUFFER_SIZE = 128 * 1024;
     private static final String TAB_DELIMITER = "\t";
+    public static final DateTimeFormatter DEFAULT_DATETIME_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
+    public static final ZoneId DEFAULT_ZONE_ID = ZoneId.of("Asia/Tokyo");
 
     public static final String RECORD_PARTITION_FIELD = "record.partition";
     public static final String RECORD_OFFSET_FIELD = "record.offset";
@@ -81,12 +91,23 @@ public class TsvRecordWriter implements RecordWriterProvider<HdfsSinkConnectorCo
                 try {
                     Object value = record.value();
                     JsonNode jsonNode = mapper.valueToTree(value);
-                    List<String> tsvFields = Arrays.stream(jsonNode.get(TSV_SCHEMA).asText().split(","))
-                            .map(tsvField -> tsvField.trim())
-                            .collect(toList());
-                    if (tsvFields.isEmpty()) {
+                    JsonNode tsvSchemaNode = jsonNode.get(TSV_SCHEMA);
+                    if (tsvSchemaNode == null || StringUtils.isEmpty(tsvSchemaNode.asText())) {
                         throw new ConnectException("'tsvSchema' is mandatory for TsvFormat");
                     }
+                    List<String> tsvFields = Arrays.stream(tsvSchemaNode.asText().split(","))
+                            .map(tsvField -> tsvField.trim())
+                            .collect(toList());
+
+                    JsonNode timeStampFieldsNode = jsonNode.get(TIME_STAMP_FIELDS);
+                    final Set<String> timeStampFields = timeStampFieldsNode == null
+                            ? Collections.emptySet()
+                            : Arrays.stream(timeStampFieldsNode.asText().split(","))
+                                    .map(timeStampField -> timeStampField.trim())
+                                    .collect(toSet());
+
+                    String timezoneInConf = conf.getString("timezone");
+                    final ZoneId zoneId = StringUtils.isEmpty(timezoneInConf) ? DEFAULT_ZONE_ID : ZoneId.of(timezoneInConf);
 
                     String tsvValue = tsvFields.stream()
                             .map(fieldName -> {
@@ -97,7 +118,23 @@ public class TsvRecordWriter implements RecordWriterProvider<HdfsSinkConnectorCo
                                 }
                                 String jsonPointer = JsonPointer.SEPARATOR + fieldName.replace('.', JsonPointer.SEPARATOR);
                                 JsonNode fieldValue = jsonNode.at(jsonPointer);
-                                return fieldValue == null ? "" : fieldValue.asText("");
+
+                                String result = fieldValue == null ? "" : fieldValue.asText("");
+
+                                if (timeStampFields.contains(fieldName)) {
+                                    try {
+                                        long time = Long.valueOf(result).longValue();
+                                        return Instant.ofEpochMilli(time)
+                                                .atZone(zoneId)
+                                                .format(DEFAULT_DATETIME_FORMATTER);
+                                    } catch (NumberFormatException ex) {
+                                        log.warn("number format exception {},{}", fieldName, fieldValue);
+                                        return result;
+                                    }
+                                }
+
+                                return result;
+
                             })
                             .collect(joining(TAB_DELIMITER));
                     writer.write(tsvValue);

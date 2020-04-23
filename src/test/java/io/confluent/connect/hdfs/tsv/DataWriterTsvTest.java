@@ -3,8 +3,10 @@ package io.confluent.connect.hdfs.tsv;
 import static io.confluent.connect.hdfs.tsv.TsvRecordWriter.RECORD_OFFSET_FIELD;
 import static io.confluent.connect.hdfs.tsv.TsvRecordWriter.RECORD_PARTITION_FIELD;
 import static java.util.stream.Collectors.joining;
+import static java.util.stream.Collectors.toSet;
 import static org.junit.Assert.assertEquals;
 
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -18,6 +20,7 @@ import org.apache.kafka.connect.sink.SinkRecord;
 import org.junit.Before;
 import org.junit.Test;
 
+import com.fasterxml.jackson.core.JsonPointer;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
@@ -28,7 +31,8 @@ import io.confluent.connect.hdfs.TestWithMiniDFSCluster;
 public class DataWriterTsvTest extends TestWithMiniDFSCluster {
 
     protected final ObjectMapper mapper = new ObjectMapper();
-    private String configTsvFields = "a,b,f,c,d,e";
+    private String configTsvFields = "a,b,f,c,d,e,g,h";
+    private String timeStampFields = "g,h";
 
     @Override
     @Before
@@ -42,6 +46,7 @@ public class DataWriterTsvTest extends TestWithMiniDFSCluster {
     protected Map<String, String> createProps() {
         Map<String, String> props = super.createProps();
         props.put(HdfsSinkConnectorConfig.FORMAT_CLASS_CONFIG, TsvFormat.class.getName());
+        props.put("timezone", TsvRecordWriter.DEFAULT_ZONE_ID.toString());
         return props;
     }
 
@@ -74,11 +79,14 @@ public class DataWriterTsvTest extends TestWithMiniDFSCluster {
             for (TopicPartition tp : partitions) {
                 Map<String, Object> map = new HashMap<>();
                 map.put("tsvSchema", configTsvFields);
+                map.put("timeStampFields", timeStampFields);
                 map.put("a", "test-" + offset);
                 map.put("b", true);
                 map.put("c", null);
                 map.put("d", offset);
                 map.put("e", offset + 0.1);
+                map.put("g", 1587634327000L);
+                map.put("h", 1587634327000L);
                 sinkRecords.add(new SinkRecord(TOPIC, tp.partition(), null, key, null, map, offset));
                 if (++ total >= size) {
                     break;
@@ -105,8 +113,24 @@ public class DataWriterTsvTest extends TestWithMiniDFSCluster {
                         } else if (RECORD_OFFSET_FIELD.equalsIgnoreCase(fieldName)) {
                             return String.valueOf(expectedRecord.kafkaOffset());
                         }
-                        JsonNode fieldValue = jsonNode.get(fieldName);
-                        return fieldValue == null ? "" : fieldValue.asText("");
+                        String jsonPointer = JsonPointer.SEPARATOR + fieldName.replace('.', JsonPointer.SEPARATOR);
+                        JsonNode fieldValue = jsonNode.at(jsonPointer);
+
+                        String result = fieldValue == null ? "" : fieldValue.asText("");
+
+                        Set<String> timeStampFieldsSet = Arrays.stream(timeStampFields.split(","))
+                                .map(timeStampField -> timeStampField.trim())
+                                .collect(toSet());
+
+                        if (timeStampFieldsSet.contains(fieldName)) {
+                            long time = Long.valueOf(result).longValue();
+                            return Instant.ofEpochMilli(time)
+                                    .atZone(TsvRecordWriter.DEFAULT_ZONE_ID)
+                                    .format(TsvRecordWriter.DEFAULT_DATETIME_FORMATTER);
+
+                        }
+
+                        return result;
                     })
                     .collect(joining("\t"));
 
