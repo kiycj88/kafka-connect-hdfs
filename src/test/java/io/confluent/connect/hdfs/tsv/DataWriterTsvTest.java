@@ -1,5 +1,6 @@
 package io.confluent.connect.hdfs.tsv;
 
+import static io.confluent.connect.hdfs.tsv.TsvRecordWriter.MINIMUM_UNIX_EPOCH_MILLISECONDS;
 import static io.confluent.connect.hdfs.tsv.TsvRecordWriter.RECORD_OFFSET_FIELD;
 import static io.confluent.connect.hdfs.tsv.TsvRecordWriter.RECORD_PARTITION_FIELD;
 import static java.util.stream.Collectors.joining;
@@ -85,7 +86,7 @@ public class DataWriterTsvTest extends TestWithMiniDFSCluster {
                 map.put("c", null);
                 map.put("d", offset);
                 map.put("e", offset + 0.1);
-                map.put("g", 1587634327000L);
+                map.put("g", 1587634327L);
                 map.put("h", 1587634327000L);
                 sinkRecords.add(new SinkRecord(TOPIC, tp.partition(), null, key, null, map, offset));
                 if (++ total >= size) {
@@ -124,10 +125,15 @@ public class DataWriterTsvTest extends TestWithMiniDFSCluster {
 
                         if (timeStampFieldsSet.contains(fieldName)) {
                             long time = Long.valueOf(result).longValue();
-                            return Instant.ofEpochMilli(time)
-                                    .atZone(TsvRecordWriter.DEFAULT_ZONE_ID)
-                                    .format(TsvRecordWriter.DEFAULT_DATETIME_FORMATTER);
-
+                            if (time < MINIMUM_UNIX_EPOCH_MILLISECONDS) {
+                                return Instant.ofEpochSecond(time)
+                                        .atZone(TsvRecordWriter.DEFAULT_ZONE_ID)
+                                        .format(TsvRecordWriter.DEFAULT_DATETIME_FORMATTER);
+                            } else {
+                                return Instant.ofEpochMilli(time)
+                                        .atZone(TsvRecordWriter.DEFAULT_ZONE_ID)
+                                        .format(TsvRecordWriter.DEFAULT_DATETIME_FORMATTER);
+                            }
                         }
 
                         return result;

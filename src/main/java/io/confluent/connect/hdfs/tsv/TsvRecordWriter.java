@@ -59,6 +59,8 @@ public class TsvRecordWriter implements RecordWriterProvider<HdfsSinkConnectorCo
 
     public static final String RECORD_PARTITION_FIELD = "record.partition";
     public static final String RECORD_OFFSET_FIELD = "record.offset";
+
+    public static final long MINIMUM_UNIX_EPOCH_MILLISECONDS = 1000000000000L;
     private final HdfsStorage storage;
     private final ObjectMapper mapper;
 
@@ -124,9 +126,16 @@ public class TsvRecordWriter implements RecordWriterProvider<HdfsSinkConnectorCo
                                 if (timeStampFields.contains(fieldName)) {
                                     try {
                                         long time = Long.valueOf(result).longValue();
-                                        return Instant.ofEpochMilli(time)
-                                                .atZone(zoneId)
-                                                .format(DEFAULT_DATETIME_FORMATTER);
+                                        //if time is epoch seconds, then make time stamp string from seconds
+                                        if (time < MINIMUM_UNIX_EPOCH_MILLISECONDS) {
+                                            return Instant.ofEpochSecond(time)
+                                                    .atZone(zoneId)
+                                                    .format(DEFAULT_DATETIME_FORMATTER);
+                                        } else {
+                                            return Instant.ofEpochMilli(time)
+                                                    .atZone(zoneId)
+                                                    .format(DEFAULT_DATETIME_FORMATTER);
+                                        }
                                     } catch (NumberFormatException ex) {
                                         log.warn("number format exception {},{}", fieldName, fieldValue);
                                         return result;
